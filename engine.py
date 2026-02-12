@@ -72,10 +72,18 @@ class Ball(PhysicsObject):
         pygame.draw.circle(screen, (0,0,0), (int(self.pos.x), int(self.pos.y)), self.radius, 2)
 
 class Car(PhysicsObject):
-    def __init__(self, x, y, color, angle=0):
+    def __init__(self, x, y, image_path, angle=0):
         super().__init__(x, y, mass=10.0, radius=20) 
         self.angle = angle
-        self.color = color
+        # Physics size (unchanged)
+        self.width = 55
+        self.height = 28
+
+        # Load and scale sprite to match physics size
+        img = pygame.image.load(image_path).convert_alpha()
+        self.original_image = pygame.transform.scale(
+            img, (self.width, self.height)
+        )
         self.width = 40
         self.height = 24
         self.boost = 100.0
@@ -125,20 +133,16 @@ class Car(PhysicsObject):
         for offset in offsets:
             corners.append(self.pos + offset.rotate(self.angle))
         return corners
-
     def draw(self, screen):
-        corners = self.get_corners()
-        pygame.draw.polygon(screen, self.color, corners)
-        front = (corners[0] + corners[3]) / 2
-        pygame.draw.circle(screen, (255,255,255), (int(front.x), int(front.y)), 3)
-        
-        bar_x, bar_y = self.pos.x - 20, self.pos.y - 30
+        # Rotate image
+        rotated = pygame.transform.rotate(self.original_image, -self.angle)
+        rect = rotated.get_rect(center=(self.pos.x, self.pos.y))
+        screen.blit(rotated, rect.topleft)
+
+        # Boost bar
+        bar_x, bar_y = self.pos.x - 20, self.pos.y - 40
         pygame.draw.rect(screen, (50,50,50), (bar_x, bar_y, 40, 4))
         pygame.draw.rect(screen, BOOST_COLOR, (bar_x, bar_y, 40 * (self.boost/100), 4))
-        
-        if self.boosting:
-            ex = (corners[1] + corners[2]) / 2
-            pygame.draw.circle(screen, (255, 100, 0), (int(ex.x), int(ex.y)), 6)
 
 # --- Strict Physics Solver ---
 
@@ -329,8 +333,10 @@ def main():
     clock = pygame.time.Clock()
     font = pygame.font.Font(None, 74)
 
-    car1 = Car(250, SCREEN_H/2, P1_COLOR, 0)
-    car2 = Car(SCREEN_W - 250, SCREEN_H/2, P2_COLOR, 180)
+    # car1 = Car(250, SCREEN_H/2, P1_COLOR, 0)
+    # car2 = Car(SCREEN_W - 250, SCREEN_H/2, P2_COLOR, 180)
+    car1 = Car(250, SCREEN_H/2, "assets/blue_car.png", 0)
+    car2 = Car(SCREEN_W - 250, SCREEN_H/2, "assets/red_car.png", 180)
     ball = Ball(SCREEN_W/2, SCREEN_H/2)
     
     scores = [0, 0]
