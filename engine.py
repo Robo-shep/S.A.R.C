@@ -154,68 +154,99 @@ def resolve_arena_collisions(obj):
     r = obj.radius
     elasticity = BALL_ELASTICITY if isinstance(obj, Ball) else CAR_WALL_ELASTICITY
 
-    # Goal Y-Bounds
+    # Goal Coordinates
     goal_top = SCREEN_H/2 - GOAL_SIZE/2
     goal_bot = SCREEN_H/2 + GOAL_SIZE/2
+    
+    # Define the 4 Post Locations (Corners of the goal mouth)
+    tl_post = pygame.math.Vector2(OFFSET_X, goal_top)
+    bl_post = pygame.math.Vector2(OFFSET_X, goal_bot)
+    tr_post = pygame.math.Vector2(OFFSET_X + ARENA_W, goal_top)
+    br_post = pygame.math.Vector2(OFFSET_X + ARENA_W, goal_bot)
 
-# --- 1. LEFT SIDE ---
+    # --- 1. GOAL POST COLLISIONS (The Rounded Corners) ---
+    # We check these FIRST so the flat walls don't override the bounce.
+    
+    # Left Top Post
+    if (obj.pos - tl_post).length_squared() < r*r:
+        normal = (obj.pos - tl_post).normalize()
+        obj.pos = tl_post + normal * r
+        bounce(obj, normal, elasticity)
+        return # Skip other wall checks to prevent jitter
+
+    # Left Bottom Post
+    if (obj.pos - bl_post).length_squared() < r*r:
+        normal = (obj.pos - bl_post).normalize()
+        obj.pos = bl_post + normal * r
+        bounce(obj, normal, elasticity)
+        return
+
+    # Right Top Post
+    if (obj.pos - tr_post).length_squared() < r*r:
+        normal = (obj.pos - tr_post).normalize()
+        obj.pos = tr_post + normal * r
+        bounce(obj, normal, elasticity)
+        return
+
+    # Right Bottom Post
+    if (obj.pos - br_post).length_squared() < r*r:
+        normal = (obj.pos - br_post).normalize()
+        obj.pos = br_post + normal * r
+        bounce(obj, normal, elasticity)
+        return
+
+    # --- 2. LEFT SIDE WALLS ---
     if obj.pos.x - r < OFFSET_X:
-        # Check if inside the vertical Goal Opening
+        # Are we in the goal mouth vertical range?
         if goal_top < obj.pos.y < goal_bot:
-            
-            # A. Back of Net (Vertical Wall)
-            back_net_x = OFFSET_X - GOAL_DEPTH
-            if obj.pos.x - r < back_net_x:
-                obj.pos.x = back_net_x + r
+            # A. Back of Net
+            back_net = OFFSET_X - GOAL_DEPTH
+            if obj.pos.x - r < back_net:
+                obj.pos.x = back_net + r
                 bounce(obj, pygame.math.Vector2(1, 0), elasticity)
-
-            # B. Inside Top Wall of Goal (Prevent going UP into the wall)
-            # Wall is at y = goal_top. Ball is below it.
-            if obj.pos.y - r < goal_top:
-                obj.pos.y = goal_top + r
-                bounce(obj, pygame.math.Vector2(0, 1), elasticity)
-
-            # C. Inside Bottom Wall of Goal (Prevent going DOWN into the wall)
-            # Wall is at y = goal_bot. Ball is above it.
-            elif obj.pos.y + r > goal_bot:
-                obj.pos.y = goal_bot - r
-                bounce(obj, pygame.math.Vector2(0, -1), elasticity)
-
-            # D. Goal Posts (The corners where the goal meets the field)
-            # (Keep your existing post logic here if you want round posts)
-
+            
+            # B. Inner Top Wall (Only if inside net depth)
+            if obj.pos.x < OFFSET_X: 
+                if obj.pos.y - r < goal_top:
+                    obj.pos.y = goal_top + r
+                    bounce(obj, pygame.math.Vector2(0, 1), elasticity)
+            
+            # C. Inner Bottom Wall (Only if inside net depth)
+            if obj.pos.x < OFFSET_X:
+                if obj.pos.y + r > goal_bot:
+                    obj.pos.y = goal_bot - r
+                    bounce(obj, pygame.math.Vector2(0, -1), elasticity)
         else:
-            # Hitting the main arena wall (outside the goal)
+            # We are hitting the flat field wall (Outside goal range)
             obj.pos.x = OFFSET_X + r
             bounce(obj, pygame.math.Vector2(1, 0), elasticity)
 
-    # --- 2. RIGHT SIDE ---
+    # --- 3. RIGHT SIDE WALLS ---
     elif obj.pos.x + r > OFFSET_X + ARENA_W:
-        # Check if inside the vertical Goal Opening
         if goal_top < obj.pos.y < goal_bot:
-            
             # A. Back of Net
-            back_net_x = OFFSET_X + ARENA_W + GOAL_DEPTH
-            if obj.pos.x + r > back_net_x:
-                obj.pos.x = back_net_x - r
+            back_net = OFFSET_X + ARENA_W + GOAL_DEPTH
+            if obj.pos.x + r > back_net:
+                obj.pos.x = back_net - r
                 bounce(obj, pygame.math.Vector2(-1, 0), elasticity)
 
-            # B. Inside Top Wall of Goal
-            if obj.pos.y - r < goal_top:
-                obj.pos.y = goal_top + r
-                bounce(obj, pygame.math.Vector2(0, 1), elasticity)
+            # B. Inner Top Wall
+            if obj.pos.x > OFFSET_X + ARENA_W:
+                if obj.pos.y - r < goal_top:
+                    obj.pos.y = goal_top + r
+                    bounce(obj, pygame.math.Vector2(0, 1), elasticity)
 
-            # C. Inside Bottom Wall of Goal
-            elif obj.pos.y + r > goal_bot:
-                obj.pos.y = goal_bot - r
-                bounce(obj, pygame.math.Vector2(0, -1), elasticity)
-
+            # C. Inner Bottom Wall
+            if obj.pos.x > OFFSET_X + ARENA_W:
+                if obj.pos.y + r > goal_bot:
+                    obj.pos.y = goal_bot - r
+                    bounce(obj, pygame.math.Vector2(0, -1), elasticity)
         else:
-            # Hitting the main arena wall
+            # Flat field wall
             obj.pos.x = OFFSET_X + ARENA_W - r
             bounce(obj, pygame.math.Vector2(-1, 0), elasticity)
 
-    # --- 3. TOP & BOTTOM WALLS ---
+    # --- 4. TOP & BOTTOM FIELD WALLS ---
     if obj.pos.y - r < OFFSET_Y:
         obj.pos.y = OFFSET_Y + r
         bounce(obj, pygame.math.Vector2(0, 1), elasticity)
@@ -223,7 +254,7 @@ def resolve_arena_collisions(obj):
         obj.pos.y = OFFSET_Y + ARENA_H - r
         bounce(obj, pygame.math.Vector2(0, -1), elasticity)
 
-    # --- 4. CORNERS ---
+    # --- 5. CHAMFERED CORNERS ---
     for i in range(4):
         anchor = CORNER_POINTS[i]
         normal = CORNER_NORMALS[i]
