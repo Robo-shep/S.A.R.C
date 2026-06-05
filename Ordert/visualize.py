@@ -5,9 +5,10 @@ import numpy as np
 import math
 import sys
 import os
+import multiprocessing as mp
 
 # ==========================================
-# --- CONFIGURATION & CONSTANTS (Synced) ---
+# --- CONFIGURATION & CONSTANTS ---
 # ==========================================
 SCREEN_W, SCREEN_H = 1200, 1000
 TARGET_FPS = 60
@@ -21,7 +22,7 @@ P2_COLOR = (255, 100, 50)  # Orange (Human/Opponent)
 BALL_COLOR = (220, 220, 220)
 BOOST_COLOR = (255, 255, 0)
 
-# --- Physics Constants (From enginenumpy.py) ---
+# --- Physics Constants ---
 DRAG = 0.99 
 TIRE_GRIP_NORMAL = 0.95 
 TIRE_GRIP_DRIFT = 0.05
@@ -35,7 +36,7 @@ BALL_ELASTICITY = 0.8
 CAR_WALL_ELASTICITY = 0.5 
 BALL_DRAG = 0.999
 
-# --- Arena Dimensions (From enginenumpy.py) ---
+# --- Arena Dimensions ---
 OFFSET_X, OFFSET_Y = 100, 100
 ARENA_W, ARENA_H = SCREEN_W - 200, SCREEN_H - 200
 GOAL_SIZE = 200
@@ -57,7 +58,6 @@ def rotate_vector(v, angle_degrees):
         v[0] * s + v[1] * c
     ])
 
-# Pre-compute corner normals/points as numpy arrays
 CORNER_NORMALS = [
     normalize(np.array([0.707, 0.707])),   # TL
     normalize(np.array([-0.707, 0.707])),  # TR
@@ -92,11 +92,8 @@ class Car(PhysicsObject):
         super().__init__(x, y, mass=10.0, radius=20) 
         self.angle = float(angle)
         self.color = color
-        
-        # Hitbox dimensions from enginenumpy.py
         self.width = 40.0 
         self.height = 24.0 
-        
         self.boost = 100.0
         self.boosting = False
         self.drifting = False
@@ -119,7 +116,6 @@ class Car(PhysicsObject):
             
         vel_mag = np.linalg.norm(self.vel)
         
-        # Turn logic
         if vel_mag > 0.5 or self.drifting:
             orientation = rotate_vector(np.array([1.0, 0.0]), self.angle)
             dot = np.dot(self.vel, orientation)
@@ -127,27 +123,23 @@ class Car(PhysicsObject):
             if self.drifting: direction = 1.0
             self.angle += self.turn * TURN_SPEED * direction * 0.15 
 
-        # Forward vector
         forward = rotate_vector(np.array([1.0, 0.0]), self.angle)
         self.vel += forward * self.throttle * current_accel
 
-        # Lateral friction
-        right = rotate_vector(forward, 90) # Rotate 90 deg
+        right = rotate_vector(forward, 90)
         lateral_vel = np.dot(self.vel, right)
         grip = TIRE_GRIP_DRIFT if self.drifting else TIRE_GRIP_NORMAL
         self.vel -= right * lateral_vel * grip * 0.2 
         self.vel *= DRAG
 
-        # Cap Speed
         vel_mag = np.linalg.norm(self.vel)
         if vel_mag > current_max:
             self.vel = (self.vel / vel_mag) * current_max
 
 # ==========================================
-# --- PHYSICS SOLVER (From enginenumpy.py) ---
+# --- PHYSICS SOLVER ---
 # ==========================================
 def bounce(obj, normal, elasticity):
-    """Reflects velocity off a normal with elasticity."""
     vel_along_normal = np.dot(obj.vel, normal)
     if vel_along_normal < 0: 
         j = -(1 + elasticity) * vel_along_normal
@@ -157,17 +149,14 @@ def bounce(obj, normal, elasticity):
 def resolve_arena_collisions(obj):
     r = obj.radius
     elasticity = BALL_ELASTICITY if isinstance(obj, Ball) else CAR_WALL_ELASTICITY
-
     goal_top = SCREEN_H/2 - GOAL_SIZE/2
     goal_bot = SCREEN_H/2 + GOAL_SIZE/2
     
-    # Post locations
     tl_post = np.array([OFFSET_X, goal_top])
     bl_post = np.array([OFFSET_X, goal_bot])
     tr_post = np.array([OFFSET_X + ARENA_W, goal_top])
     br_post = np.array([OFFSET_X + ARENA_W, goal_bot])
 
-    # 1. Post Collisions
     for post in [tl_post, bl_post, tr_post, br_post]:
         diff = obj.pos - post
         dist_sq = np.dot(diff, diff)
@@ -178,7 +167,6 @@ def resolve_arena_collisions(obj):
             bounce(obj, normal, elasticity)
             return
 
-    # 2. Left Side
     if obj.pos[0] - r < OFFSET_X:
         if goal_top < obj.pos[1] < goal_bot:
             back_net = OFFSET_X - GOAL_DEPTH
@@ -196,7 +184,6 @@ def resolve_arena_collisions(obj):
             obj.pos[0] = OFFSET_X + r
             bounce(obj, np.array([1.0, 0.0]), elasticity)
 
-    # 3. Right Side
     elif obj.pos[0] + r > OFFSET_X + ARENA_W:
         if goal_top < obj.pos[1] < goal_bot:
             back_net = OFFSET_X + ARENA_W + GOAL_DEPTH
@@ -214,7 +201,6 @@ def resolve_arena_collisions(obj):
             obj.pos[0] = OFFSET_X + ARENA_W - r
             bounce(obj, np.array([-1.0, 0.0]), elasticity)
 
-    # 4. Top & Bottom
     if obj.pos[1] - r < OFFSET_Y:
         obj.pos[1] = OFFSET_Y + r
         bounce(obj, np.array([0.0, 1.0]), elasticity)
@@ -222,7 +208,6 @@ def resolve_arena_collisions(obj):
         obj.pos[1] = OFFSET_Y + ARENA_H - r
         bounce(obj, np.array([0.0, -1.0]), elasticity)
 
-    # 5. Corners
     for i in range(4):
         anchor = CORNER_POINTS[i]
         normal = CORNER_NORMALS[i]
@@ -235,13 +220,10 @@ def resolve_arena_collisions(obj):
 
 def resolve_car_ball(car, ball):
     diff = ball.pos - car.pos
-    # Rotate ball into car's local space
     local_ball = rotate_vector(diff, -car.angle)
-    
     hw, hh = car.width/2, car.height/2
     cx = max(-hw, min(local_ball[0], hw))
     cy = max(-hh, min(local_ball[1], hh))
-    
     closest_local = np.array([cx, cy])
     dist_vec = local_ball - closest_local
     dist_sq = np.dot(dist_vec, dist_vec)
@@ -250,21 +232,17 @@ def resolve_car_ball(car, ball):
         if dist_sq == 0: 
             dist_vec = np.array([ball.radius, 0.0])
             dist_sq = ball.radius**2
-            
         dist = np.sqrt(dist_sq)
         normal_local = dist_vec / dist
         normal_world = rotate_vector(normal_local, car.angle)
         overlap = ball.radius - dist
-        
         total_inv_mass = car.inv_mass + ball.inv_mass
         move_per_inv_mass = (normal_world * overlap) / total_inv_mass
         car.pos -= move_per_inv_mass * car.inv_mass
         ball.pos += move_per_inv_mass * ball.inv_mass
-        
         rel_vel = ball.vel - car.vel
         vel_along_normal = np.dot(rel_vel, normal_world)
         if vel_along_normal > 0: return 
-        
         j = -(1 + BALL_ELASTICITY) * vel_along_normal
         j /= total_inv_mass
         impulse = j * normal_world
@@ -275,27 +253,22 @@ def resolve_car_car(c1, c2):
     dist_vec = c1.pos - c2.pos
     dist = np.linalg.norm(dist_vec)
     min_dist = 40.0 
-    
     if dist < min_dist:
         overlap = min_dist - dist
         if dist == 0: 
             dist_vec = np.array([1.0, 0.0])
             dist=1.0
         normal = dist_vec / dist
-        
         c1.pos += normal * (overlap * 0.5)
         c2.pos -= normal * (overlap * 0.5)
-        
         rel_vel = c1.vel - c2.vel
         vel_along = np.dot(rel_vel, normal)
         if vel_along > 0: return
-        
         j = -(1 + 0.5) * vel_along
         j /= (c1.inv_mass + c2.inv_mass)
         impulse = j * normal
         c1.vel += impulse * c1.inv_mass
         c2.vel -= impulse * c2.inv_mass
-
 
 # ==========================================
 # --- MODEL ARCHITECTURES ---
@@ -304,29 +277,21 @@ class OldPPOAgent(nn.Module):
     def __init__(self):
         super().__init__()
         self.actor = nn.Sequential(
-            nn.Linear(15, 64),
-            nn.Tanh(),
-            nn.Linear(64, 64),
-            nn.Tanh(),
-            nn.Linear(64, 4),
-            nn.Tanh()
+            nn.Linear(15, 64), nn.Tanh(),
+            nn.Linear(64, 64), nn.Tanh(),
+            nn.Linear(64, 4), nn.Tanh()
         )
-    def forward(self, x):
-        return self.actor(x)
+    def forward(self, x): return self.actor(x)
 
 class CurriculumAgent(nn.Module):
     def __init__(self):
         super().__init__()
         self.actor = nn.Sequential(
-            nn.Linear(15, 128),
-            nn.Tanh(),
-            nn.Linear(128, 128),
-            nn.Tanh(),
-            nn.Linear(128, 4),
-            nn.Tanh()
+            nn.Linear(15, 128), nn.Tanh(),
+            nn.Linear(128, 128), nn.Tanh(),
+            nn.Linear(128, 4), nn.Tanh()
         )
-    def forward(self, x):
-        return self.actor(x)
+    def forward(self, x): return self.actor(x)
 
 # ==========================================
 # --- OBSERVATION LOGIC ---
@@ -348,16 +313,13 @@ def get_obs_curriculum(engine):
     my_car = engine.car1
     opp_car = engine.car2
     ball = engine.ball
-    
     obs = [
         my_car.pos[0] / SCREEN_W, my_car.pos[1] / SCREEN_H,
         my_car.vel[0] / 10, my_car.vel[1] / 10,
         np.cos(np.radians(my_car.angle)), np.sin(np.radians(my_car.angle)),
         my_car.boost / 100.0,
-        
         ball.pos[0] / SCREEN_W, ball.pos[1] / SCREEN_H,
         ball.vel[0] / 10, ball.vel[1] / 10,
-        
         opp_car.pos[0] / SCREEN_W, opp_car.pos[1] / SCREEN_H,
         opp_car.vel[0] / 10, opp_car.vel[1] / 10
     ]
@@ -379,39 +341,28 @@ class GameEngine:
         self.car1.vel[:] = 0
         self.car1.angle = 0.0
         self.car1.boost = 100.0
-        
         self.car2.pos[:] = [float(SCREEN_W - 250), SCREEN_H/2]
         self.car2.vel[:] = 0
         self.car2.angle = 180.0
         self.car2.boost = 100.0
-        
         self.ball.pos[:] = [SCREEN_W/2, SCREEN_H/2]
         self.ball.vel[:] = 0
 
     def step_physics(self):
         dt = 1.0 / PHYSICS_SUBSTEPS
-        
         for _ in range(PHYSICS_SUBSTEPS):
             self.car1.update_controls()
             self.car2.update_controls()
-            
             self.car1.pos += self.car1.vel * dt
             self.car2.pos += self.car2.vel * dt
             self.ball.pos += self.ball.vel * dt
-            
-            # Apply Ball Drag (From enginenumpy.py)
             self.ball.vel *= BALL_DRAG
-
-            # Resolve Collisions using enginenumpy logic
             resolve_arena_collisions(self.car1)
             resolve_arena_collisions(self.car2)
             resolve_arena_collisions(self.ball)
-            
             resolve_car_ball(self.car1, self.ball)
             resolve_car_ball(self.car2, self.ball)
             resolve_car_car(self.car1, self.car2)
-
-        # Goal Check (Expanded from enginenumpy logic)
         if self.ball.pos[0] + self.ball.radius < OFFSET_X - 10:
              if SCREEN_H/2 - GOAL_SIZE/2 < self.ball.pos[1] < SCREEN_H/2 + GOAL_SIZE/2:
                 self.scores[1] += 1
@@ -420,37 +371,28 @@ class GameEngine:
              if SCREEN_H/2 - GOAL_SIZE/2 < self.ball.pos[1] < SCREEN_H/2 + GOAL_SIZE/2:
                 self.scores[0] += 1
                 return True
-        
         return False
 
 # ==========================================
 # --- RENDERING HELPERS ---
 # ==========================================
 def draw_car(screen, car):
-    # Visual size (can differ slightly from hitbox if desired, but kept close here)
     surf = pygame.Surface((55, 28), pygame.SRCALPHA)
     surf.fill(car.color)
-    # Windshield
     pygame.draw.rect(surf, (200, 200, 200), (35, 2, 10, 24))
-    
     rotated = pygame.transform.rotate(surf, -car.angle)
     rect = rotated.get_rect(center=(car.pos[0], car.pos[1]))
     screen.blit(rotated, rect.topleft)
-    
-    # Boost bar
     bx, by = car.pos[0] - 20, car.pos[1] - 40
     pygame.draw.rect(screen, (50,50,50), (bx, by, 40, 4))
     pygame.draw.rect(screen, BOOST_COLOR, (bx, by, 40 * (car.boost/100), 4))
 
 def draw_game(screen, engine, font, mode_name):
     screen.fill(BG_COLOR)
-    
-    # Draw Arena
     pygame.draw.rect(screen, (30,30,40), (OFFSET_X, OFFSET_Y, ARENA_W, ARENA_H))
     pygame.draw.rect(screen, (25,25,35), (OFFSET_X-GOAL_DEPTH, SCREEN_H/2-GOAL_SIZE/2, GOAL_DEPTH, GOAL_SIZE))
     pygame.draw.rect(screen, (25,25,35), (OFFSET_X+ARENA_W, SCREEN_H/2-GOAL_SIZE/2, GOAL_DEPTH, GOAL_SIZE))
     
-    # Walls
     pygame.draw.lines(screen, WALL_COLOR, True, [
         (OFFSET_X+CORNER_SIZE, OFFSET_Y), (OFFSET_X+ARENA_W-CORNER_SIZE, OFFSET_Y), 
         (OFFSET_X+ARENA_W, OFFSET_Y+CORNER_SIZE), (OFFSET_X+ARENA_W, OFFSET_Y+ARENA_H-CORNER_SIZE), 
@@ -458,7 +400,6 @@ def draw_game(screen, engine, font, mode_name):
         (OFFSET_X, OFFSET_Y+ARENA_H-CORNER_SIZE), (OFFSET_X, OFFSET_Y+CORNER_SIZE)
     ], 10)
     
-    # Posts
     goal_top = SCREEN_H//2 - GOAL_SIZE//2
     goal_bot = SCREEN_H//2 + GOAL_SIZE//2
     pygame.draw.circle(screen, WALL_COLOR, (OFFSET_X, goal_top), 5)
@@ -469,128 +410,134 @@ def draw_game(screen, engine, font, mode_name):
     draw_car(screen, engine.car1)
     draw_car(screen, engine.car2)
     
-    # Draw Ball
     bx, by = int(engine.ball.pos[0]), int(engine.ball.pos[1])
     pygame.draw.circle(screen, BALL_COLOR, (bx, by), int(engine.ball.radius))
     pygame.draw.circle(screen, (0,0,0), (bx, by), int(engine.ball.radius), 2)
     
-    # UI
     score_text = font.render(f"AI: {engine.scores[0]}   YOU: {engine.scores[1]}", True, (255, 255, 255))
     screen.blit(score_text, (SCREEN_W/2 - score_text.get_width()/2, 30))
-    
     info_text = font.render(f"Mode: {mode_name}", True, (150, 150, 150))
     screen.blit(info_text, (20, 20))
-    
     controls = font.render("Arrows: Move | Shift: Boost | Space: Drift | R: Reset", True, (100, 100, 100))
     screen.blit(controls, (SCREEN_W/2 - controls.get_width()/2, SCREEN_H - 40))
 
 def draw_nn_hud(screen, obs, action, x, y):
     """
     Draws a visual representation of the Neural Network state.
-    x, y: Top-left coordinates of the HUD
     """
-    # Config
     WIDTH, HEIGHT = 320, 400
     bg_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
-    bg_surface.fill((10, 10, 15, 220)) # Semi-transparent dark background
+    bg_surface.fill((10, 10, 15, 220)) 
     
-    # Fonts (create locally to ensure availability)
     font_small = pygame.font.SysFont("consolas", 12)
     font_header = pygame.font.SysFont("consolas", 16, bold=True)
 
-    # Input Labels (Mapped to your 15 observation values)
     input_names = [
-        "My X", "My Y", "My VX", "My VY", "Ang Cos", "Ang Sin", "Boost", # 0-6
-        "Ball X", "Ball Y", "Ball VX", "Ball VY",                        # 7-10
-        "Opp X", "Opp Y", "Opp VX", "Opp VY"                             # 11-14
+        "My X", "My Y", "My VX", "My VY", "Ang Cos", "Ang Sin", "Boost",
+        "Ball X", "Ball Y", "Ball VX", "Ball VY",                        
+        "Opp X", "Opp Y", "Opp VX", "Opp VY"                             
     ]
-    
-    # Output Labels (Mapped to your 4 action values)
     output_names = ["Throttle", "Steer", "Boost", "Drift"]
 
-    # --- Helper to get color from value ---
     def get_color_val(val):
-        # Clamp -1 to 1
         v = max(-1.0, min(1.0, float(val)))
         intensity = int(abs(v) * 255)
-        if v > 0: return (0, intensity, 255)  # Blue for positive
-        if v < 0: return (255, 50, 50)        # Red for negative
-        return (50, 50, 50)                   # Grey for zero
+        if v > 0: return (0, intensity, 255)
+        if v < 0: return (255, 50, 50)
+        return (50, 50, 50)
 
-    # Layout
     in_x, out_x = 80, 240
     start_y = 40
     step_y_in = 22
     step_y_out = 60
 
-    # Draw Header
     title = font_header.render("NN INTERNALS", True, (200, 200, 200))
     bg_surface.blit(title, (WIDTH//2 - title.get_width()//2, 10))
 
-    # 1. Draw Inputs (Left Side)
     node_positions_in = []
     for i, val in enumerate(obs):
         py = start_y + i * step_y_in
         color = get_color_val(val)
-        
-        # Text
         txt = font_small.render(f"{input_names[i][:7]}", True, (150, 150, 150))
         bg_surface.blit(txt, (5, py - 6))
-        
-        # Node Circle
         pygame.draw.circle(bg_surface, color, (in_x, py), 6)
-        pygame.draw.circle(bg_surface, (200,200,200), (in_x, py), 7, 1) # Rim
-        
-        # Value Bar (mini visualizer next to text)
+        pygame.draw.circle(bg_surface, (200,200,200), (in_x, py), 7, 1) 
         bar_len = int(val * 20)
         pygame.draw.rect(bg_surface, color, (in_x - 40, py + 2, bar_len, 2))
-        
         node_positions_in.append((in_x, py))
 
-    # 2. Draw Outputs (Right Side)
     node_positions_out = []
     for i, val in enumerate(action):
         py = start_y + 40 + i * step_y_out
-        
-        # Logic for boolean actions (Boost/Drift) vs continuous
-        if i >= 2: val = 1.0 if val > 0 else 0.0 # Binary display for buttons
-        
+        if i >= 2: val = 1.0 if val > 0 else 0.0 
         color = get_color_val(val)
-
-        # Node Circle
         pygame.draw.circle(bg_surface, color, (out_x, py), 10)
         pygame.draw.circle(bg_surface, (255,255,255), (out_x, py), 11, 2)
-        
-        # Text
         txt = font_small.render(output_names[i], True, (255, 255, 255))
         bg_surface.blit(txt, (out_x + 15, py - 6))
-        
-        # Value Text
         val_txt = font_small.render(f"{val:.2f}", True, color)
         bg_surface.blit(val_txt, (out_x + 15, py + 6))
-
         node_positions_out.append((out_x, py))
 
-    # 3. Draw Synapses (Visual Fake-out for aesthetics)
-    # We draw faint lines from active inputs to active outputs to visualize "thought"
     for i, in_pos in enumerate(node_positions_in):
         in_val = obs[i]
-        if abs(in_val) < 0.1: continue # Skip weak inputs to reduce clutter
-        
+        if abs(in_val) < 0.1: continue 
         for j, out_pos in enumerate(node_positions_out):
             out_val = action[j]
             if abs(out_val) < 0.2: continue 
-
-            # Line opacity based on signal strength
             alpha = int(abs(in_val * out_val) * 100)
             if alpha > 255: alpha = 255
-            
             line_color = (100, 200, 255, alpha) if in_val * out_val > 0 else (255, 100, 100, alpha)
-            
-            # Draw line on a temp surface to support alpha
             pygame.draw.line(bg_surface, line_color, in_pos, out_pos, 1)
 
     screen.blit(bg_surface, (x, y))
+
+# ==========================================
+# --- SEPARATE PROCESS FOR HUD ---
+# ==========================================
+def hud_worker(queue):
+    """
+    Runs in a separate process to render the NN visuals in a second window.
+    """
+    pygame.init()
+    # Create a small window just for the HUD
+    # 340 width to fit the 320 HUD + margin, 420 height
+    hud_screen = pygame.display.set_mode((340, 420))
+    pygame.display.set_caption("Neural Net View")
+    clock = pygame.time.Clock()
+    
+    running = True
+    obs, action = None, None
+    
+    while running:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                running = False
+        
+        # Check for new data from the main process
+        # We loop to get the LATEST data (discarding old frames to prevent lag)
+        try:
+            while not queue.empty():
+                obs, action = queue.get_nowait()
+        except Exception:
+            pass
+
+        hud_screen.fill((10, 10, 15)) # Dark background
+        
+        if obs is not None and action is not None:
+            # Draw at (10, 10) padding
+            draw_nn_hud(hud_screen, obs, action, 10, 10)
+        else:
+            # Waiting for data text
+            font = pygame.font.SysFont("consolas", 14)
+            text = font.render("Waiting for Data...", True, (100, 100, 100))
+            hud_screen.blit(text, (80, 200))
+
+        pygame.display.flip()
+        clock.tick(30) # 30 FPS is plenty for the HUD
+
+    pygame.quit()
+    sys.exit()
 
 # ==========================================
 # --- MAIN LOOP ---
@@ -637,6 +584,13 @@ def main():
         return
 
     print(">> Model Loaded. Starting Pygame...")
+    
+    # --- Start HUD Process ---
+    # We use a Queue to send (obs, action) to the other window
+    data_queue = mp.Queue()
+    hud_p = mp.Process(target=hud_worker, args=(data_queue,))
+    hud_p.start()
+
     model.eval()
     
     pygame.init()
@@ -648,55 +602,66 @@ def main():
     engine = GameEngine()
     
     running = True
-    while running:
-        for event in pygame.event.get():
-            if event.type == pygame.QUIT:
-                running = False
-            if event.type == pygame.KEYDOWN:
-                if event.key == pygame.K_r:
-                    engine.reset_positions()
-                    engine.scores = [0, 0]
+    try:
+        while running:
+            for event in pygame.event.get():
+                if event.type == pygame.QUIT:
+                    running = False
+                if event.type == pygame.KEYDOWN:
+                    if event.key == pygame.K_r:
+                        engine.reset_positions()
+                        engine.scores = [0, 0]
 
-        # 1. AI Logic
-        obs = obs_func(engine)
-        obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
-        with torch.no_grad():
-            action = model(obs_tensor).squeeze(0).numpy()
-        
-        # Apply AI
-        engine.car1.throttle = float(np.clip(action[0], -1, 1))
-        engine.car1.turn = float(np.clip(action[1], -1, 1))
-        engine.car1.boost_active = action[2] > 0
-        engine.car1.drifting = action[3] > 0
+            # 1. AI Logic
+            obs = obs_func(engine)
+            obs_tensor = torch.FloatTensor(obs).unsqueeze(0)
+            with torch.no_grad():
+                action = model(obs_tensor).squeeze(0).numpy()
+            
+            # Send data to HUD window (obs and action are numpy arrays, so safe to send)
+            # We don't want to block if queue is full (though unlikely with the reader clearing it)
+            if not data_queue.full():
+                data_queue.put((obs, action))
 
-        # 2. Human Logic (Car 2)
-        keys = pygame.key.get_pressed()
-        throttle = 0.0
-        if keys[pygame.K_w]: throttle += 1.0
-        if keys[pygame.K_s]: throttle -= 1.0
-        
-        turn = 0.0
-        if keys[pygame.K_d]: turn += 1.0
-        if keys[pygame.K_a]: turn -= 1.0
-        
-        engine.car2.throttle = throttle
-        engine.car2.turn = turn
-        engine.car2.boost_active = keys[pygame.K_RSHIFT] or keys[pygame.K_LSHIFT]
-        engine.car2.drifting = keys[pygame.K_SPACE]
+            # Apply AI
+            engine.car1.throttle = float(np.clip(action[0], -1, 1))
+            engine.car1.turn = float(np.clip(action[1], -1, 1))
+            engine.car1.boost_active = action[2] > 0
+            engine.car1.drifting = action[3] > 0
 
-        # 3. Physics & Render
-        if engine.step_physics():
+            # 2. Human Logic (Car 2)
+            keys = pygame.key.get_pressed()
+            throttle = 0.0
+            if keys[pygame.K_w]: throttle += 1.0
+            if keys[pygame.K_s]: throttle -= 1.0
+            
+            turn = 0.0
+            if keys[pygame.K_d]: turn += 1.0
+            if keys[pygame.K_a]: turn -= 1.0
+            
+            engine.car2.throttle = throttle
+            engine.car2.turn = turn
+            engine.car2.boost_active = keys[pygame.K_RSHIFT] or keys[pygame.K_LSHIFT]
+            engine.car2.drifting = keys[pygame.K_SPACE]
+
+            # 3. Physics & Render
+            if engine.step_physics():
+                draw_game(screen, engine, font, mode_name)
+                pygame.display.flip()
+                pygame.time.delay(500)
+                engine.reset_positions()
+
             draw_game(screen, engine, font, mode_name)
+            # Note: We NO LONGER draw the HUD here. It's in the other window.
+            
             pygame.display.flip()
-            pygame.time.delay(500)
-            engine.reset_positions()
-
-        draw_game(screen, engine, font, mode_name)
-        draw_nn_hud(screen, obs, action, 10, 10)
-        pygame.display.flip()
-        clock.tick(TARGET_FPS)
-
-    pygame.quit()
+            clock.tick(TARGET_FPS)
+            
+    finally:
+        # Cleanup: Ensure the child process is terminated when main window closes
+        hud_p.terminate()
+        hud_p.join()
+        pygame.quit()
 
 if __name__ == "__main__":
     main()
